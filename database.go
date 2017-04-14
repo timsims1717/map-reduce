@@ -3,10 +3,12 @@ package main
 import (
     //"bufio"
 	"database/sql"
-    "fmt"
+    //"fmt"
     _ "github.com/mattn/go-sqlite3"
-    //"io"
+    "io"
     //"io/ioutil"
+    "log"
+    "net/http"
     "os"
 )
 
@@ -88,16 +90,52 @@ func splitDatabase(source, outputPattern string, m int) ([]string, error) {
 	}
 
 	if i < m {
-		return nil, "err"
+		return nil, err
+	}
+	//NOT FINISHED
+	return nil, nil
+}
+
+func mergeDatabases(urls []string, path string, temp string) (*sql.DB, error) {
+	datbase, err := createDatabase(path)
+	if err != nil {
+		log.Fatal(err)
 	}
 
+	for _, url := range urls {
+		err := download(url, temp)
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+
+	//NOT FINISHED
 	return nil, nil
+}
+
+func download(url, path string) error {
+
+	out, err := os.Create(path)
+  	if err != nil  {
+    	return err
+  	}
+  	defer out.Close()
+
+	resp, err := http.Get(url)
+	if err != nil {
+			log.Fatal(err)
+		}
+	defer resp.Body.Close()
+
+	_, err = io.Copy(out, resp.Body)
+
+	return err
 }
 
 func main () {
 	//_,err := openDatabase("austen.sqlite3")
 	//_,err := createDatabase("datbase.sqlite3")
-	if err != nil {
-		fmt.Println(err)
-	}
+	// if err != nil {
+	// 	fmt.Println(err)
+	// }
 }
