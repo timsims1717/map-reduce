@@ -13,7 +13,7 @@ import (
 )
 
 func openDatabase (path string) (*sql.DB, error) {
-	dat, err := sql.Open("sqlite3", path)
+	dat, err := sql.Open( "sqlite3", path)
 
 	if err != nil || dat == nil {
 		return nil, err
@@ -24,7 +24,7 @@ func openDatabase (path string) (*sql.DB, error) {
 	pragma journal_mode = off;
 	`
 
-	_, err = dat.Exec(cmd)
+	_,err = dat.Exec(cmd)
 	if err != nil {
 		dat.Close()
 		return nil, err
@@ -33,7 +33,7 @@ func openDatabase (path string) (*sql.DB, error) {
 }
 
 func createDatabase(path string) (*sql.DB, error) {
-	if _, err := os.Stat(path); err == nil {
+	if _,err := os.Stat(path); err == nil {
 		os.Remove(path)
 	}
 	_, err := os.Create(path)
@@ -41,7 +41,8 @@ func createDatabase(path string) (*sql.DB, error) {
 		return nil, err
 	}
 
-	dat, err := sql.Open("sqlite3", path)
+	dat, err := sql.Open( "sqlite3", path)
+
 
 	if err != nil || dat == nil {
 		return nil, err
@@ -59,6 +60,7 @@ func createDatabase(path string) (*sql.DB, error) {
 		return nil, err
 	}
 	return dat, nil
+
 }
 
 func splitDatabase(source, outputPattern string, m int) ([]string, error) {
@@ -136,8 +138,8 @@ func splitDatabase(source, outputPattern string, m int) ([]string, error) {
 }
 
 func mergeDatabases(urls []string, path string, temp string) (*sql.DB, error) {
-	// datbase, err := createDatabase(path)
-	_, err := createDatabase(path) // I changed this because it complained that datbase was unused. Just change it back whenever
+	//NOT TESTED//
+	datbase, err := createDatabase(path)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -147,14 +149,23 @@ func mergeDatabases(urls []string, path string, temp string) (*sql.DB, error) {
 		if err != nil {
 			log.Fatal(err)
 		}
+
+		err = gatherInto(datbase, temp)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		err = os.Remove(temp)
+		if err != nil {
+			log.Fatal(err)
+		}
+
 	}
 
-	//NOT FINISHED
-	return nil, nil
+	return datbase, err
 }
 
 func download(url, path string) error {
-
 	out, err := os.Create(path)
   	if err != nil  {
     	return err
@@ -172,9 +183,53 @@ func download(url, path string) error {
 	return err
 }
 
-func main () {
-	_,err := splitDatabase("austen.sqlite3", "result-%d.sqlite3", 20)
+func gatherInto(db *sql.DB, path string) error {
+	cmd := `
+	attach ? as merge;
+	`
+	_, err := db.Exec(cmd, path)
 	if err != nil {
-		fmt.Println(err)
+		log.Fatal(err)
 	}
+
+	cmd = `
+	insert into pairs select * from merge.pairs;
+	`
+	_, err = db.Exec(cmd)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	cmd = `
+	detach merge;
+	`
+	_, err = db.Exec(cmd)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	return err;
+}
+
+func main () {
+	//_,err := openDatabase("austen.sqlite3")
+	//_,err := createDatabase("datbase.sqlite3")
+	// _,err := splitDatabase("austen.sqlite3", "result-%d.sqlite3", 20)
+	// if err != nil {
+	// 	fmt.Println(err)
+	// }
+
+	go func() {
+    http.Handle("/data/", http.StripPrefix("/data", http.FileServer(http.Dir("/data"))))
+    	if err := http.ListenAndServe("localhost:8080", nil); err != nil {
+    	    log.Printf("Error in HTTP server for %s: %v", "localhost:8080", err)
+   	 	}
+	}()
+
+	_, er := mergeDatabases( nil, "testIn", "tempout") //Dont know what to use for the first parameter...
+	if er != nil {
+		fmt.Println(er)
+	}
+
+	fmt.Println("IT IS DONE")
 }
