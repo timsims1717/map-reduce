@@ -214,19 +214,19 @@ func gatherInto(db *sql.DB, path string) error {
 func main () {
 	//_,err := openDatabase("austen.sqlite3")
 	//_,err := createDatabase("datbase.sqlite3")
-	// _,err := splitDatabase("austen.sqlite3", "result-%d.sqlite3", 20)
-	// if err != nil {
-	// 	fmt.Println(err)
-	// }
+	urls,err := splitDatabase("austen.sqlite3", "result-%d.sqlite3", 20)
+	if err != nil {
+		fmt.Println(err)
+	}
 
-	go func() {
-    http.Handle("/data/", http.StripPrefix("/data", http.FileServer(http.Dir("/data"))))
-    	if err := http.ListenAndServe("localhost:8080", nil); err != nil {
-    	    log.Printf("Error in HTTP server for %s: %v", "localhost:8080", err)
-   	 	}
-	}()
+	// go func() {
+ //    http.Handle("/data/", http.StripPrefix("/data", http.FileServer(http.Dir("/data"))))
+ //    	if err := http.ListenAndServe("localhost:8080", nil); err != nil {
+ //    	    log.Printf("Error in HTTP server for %s: %v", "localhost:8080", err)
+ //   	 	}
+	// }()
 
-	_, er := mergeDatabases( nil, "testIn", "tempout") //Dont know what to use for the first parameter...
+	_, er := mergeDatabases( urls , "testIn", "tempout") //Dont know what to use for the first parameter...
 	if er != nil {
 		fmt.Println(er)
 	}
