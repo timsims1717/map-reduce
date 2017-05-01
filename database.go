@@ -1,20 +1,17 @@
-package main
+package mapreduce
 
 import (
-    "bufio"
 	"database/sql"
-    "fmt"
-    _ "github.com/mattn/go-sqlite3"
-    "io"
-    //"io/ioutil"
-    "log"
-    "net"
-    "net/http"
-    "os"
+	"fmt"
+	_ "github.com/mattn/go-sqlite3"
+	"io"
+	"log"
+	"net/http"
+	"os"
 )
 
-func OpenDatabase (path string) (*sql.DB, error) {
-	dat, err := sql.Open( "sqlite3", path)
+func OpenDatabase(path string) (*sql.DB, error) {
+	dat, err := sql.Open("sqlite3", path)
 
 	if err != nil || dat == nil {
 		return nil, err
@@ -42,8 +39,7 @@ func CreateDatabase(path string) (*sql.DB, error) {
 		return nil, err
 	}
 
-	dat, err := sql.Open( "sqlite3", path)
-
+	dat, err := sql.Open("sqlite3", path)
 
 	if err != nil || dat == nil {
 		return nil, err
@@ -141,7 +137,6 @@ func SplitDatabase(source, outputPattern string, m int) ([]string, error) {
 }
 
 func MergeDatabases(urls []string, path string, temp string) (*sql.DB, error) {
-	fmt.Printf("merging into %s\n", path)
 	datbase, err := CreateDatabase(path)
 
 	if err != nil {
@@ -149,7 +144,6 @@ func MergeDatabases(urls []string, path string, temp string) (*sql.DB, error) {
 	}
 
 	for _, url := range urls {
-		fmt.Printf("Downloading %s\n", url)
 		err := Download(url, temp)
 		if err != nil {
 			fmt.Printf("failure to Download %s\n", url)

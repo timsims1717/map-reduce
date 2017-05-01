@@ -1,8 +1,16 @@
-package main
+package mapreduce
 
 import (
+	"database/sql"
+	"fmt"
 	"hash/fnv"
 	"log"
+	"net/http"
+	"os"
+	// "path/filepath"
+	"strings"
+	"strconv"
+	"unicode"
 )
 
 //Useful Structs//
@@ -36,17 +44,17 @@ func reduceInputFile(r int) string     { return fmt.Sprintf("reduce_%d_input.sql
 func reduceOutputFile(r int) string    { return fmt.Sprintf("reduce_%d_output.sqlite3", r) }
 func reducePartialFile(r int) string   { return fmt.Sprintf("reduce_%d_partial.sqlite3", r) }
 func reduceTempFile(r int) string      { return fmt.Sprintf("reduce_%d_temp.sqlite3", r) }
-func makeURL(host, file string) string { return fmt.Sprintf("http://%s/data/%s", host, file) }
+func makeURL(host, file string) string { return fmt.Sprintf("http://%s/%s", host, file) }
 
 func (task *MapTask) Process(tempdir string, client Interface) error {
 	// Download and open the input file
-	inputFile := mapInputFile(task.N)
-	err := database.Download(makeURL(task.SourceHost, inputFile))
+	inputFile := fmt.Sprintf("%s/%s", tempdir, mapInputFile(task.N))
+	err := Download(task.SourceHost, inputFile)
 	if err != nil {
-		log.Printf("Error while downloading %s: %v", inputFile, err)
+		log.Printf("Error while downloading %s: %v", task.SourceHost, err)
 		return err
 	}
-	datbase, err := database.OpenDatabase(inputFile)
+	datbase, err := OpenDatabase(inputFile)
 	if err != nil {
 		log.Printf("Error while opening %s: %v", inputFile, err)
 		return err
@@ -56,25 +64,25 @@ func (task *MapTask) Process(tempdir string, client Interface) error {
 	// Create output files
 	filenames := make([]string, task.R)
 	dats := make([]*sql.DB, task.R)
-	inserts := make([]*sql.Stmt, tasks.R)
+	inserts := make([]*sql.Stmt, task.R)
 	cmd := `
 	insert into pairs (key, value) values (?, ?);
 	`
 	for r, _ := range(dats) {
-		filename := mapOutputFile(task.N, r)
-		filenames[i] = filename
-		dats[i], err = database.CreateDatabase(filename)
+		filename := fmt.Sprintf("%s/%s", tempdir, mapOutputFile(task.N, r))
+		filenames[r] = filename
+		dats[r], err = CreateDatabase(filename)
 		if err != nil {
 			log.Printf("Error while creating %s: %v", filename, err)
 			return err
 		}
-		defer dats[i].Close()
-		inserts[i], err = dats[i].Prepare(cmd)
+		defer dats[r].Close()
+		inserts[r], err = dats[r].Prepare(cmd)
 		if err != nil {
 			log.Printf("Error while preparing statement for %s: %v", filename, err)
 			return err
 		}
-		defer inserts[i].Close()
+		defer inserts[r].Close()
 	}
 
 	// Select All Pairs from source
@@ -89,8 +97,11 @@ func (task *MapTask) Process(tempdir string, client Interface) error {
 	defer rows.Close()
 
 	// For each pair...
+	proc := 0
+	gen := 0
 	var k, v string
 	for rows.Next() {
+		proc++
 		err = rows.Scan(&k, &v)
 		if err != nil {
 			log.Printf("Error while reading values from %s: %v", inputFile, err)
@@ -98,23 +109,26 @@ func (task *MapTask) Process(tempdir string, client Interface) error {
 		}
 		outChan := make(chan Pair)
 		go client.Map(k, v, outChan)
-		for pair := range(outChan) {
+		for pair := range outChan {
+			gen++
 			hash := fnv.New32() // from the stdlib package hash/fnv
 			hash.Write([]byte(pair.Key))
 			r := int(hash.Sum32()) % task.R
-			_, err = inserts[r].Exec(k, v)
+			_, err = inserts[r].Exec(pair.Key, pair.Value)
 			if err != nil {
 				log.Printf("Error while inserting pair into %s: %v", filenames[r], err)
 				return err
 			}
 		}
 	}
+	fmt.Printf("map task processed %d pairs, generated %d pairs\n", proc, gen)
+	return nil
 }
 
 func (task *ReduceTask) Process(tempdir string, client Interface) error {
 	// Create input database and merge files
-	inputFilename := reduceInputFile(task.N)
-	inputDatabase, err := database.MergeDatabases(task.SourceHosts, inputFilename, reduceTempFile(task.N))
+	inputFilename := fmt.Sprintf("%s/%s", tempdir, reduceInputFile(task.N))
+	inputDatabase, err := MergeDatabases(task.SourceHosts, inputFilename, reduceTempFile(task.N))
 	if err != nil {
 		log.Printf("Error while opening %s: %v", inputFilename, err)
 		return err
@@ -122,8 +136,8 @@ func (task *ReduceTask) Process(tempdir string, client Interface) error {
 	defer inputDatabase.Close()
 
 	// Create output database
-	outputFilename := reduceOutputFile(task.N)
-	outputDatabase, err := database.CreateDatabase(outputFilename)
+	outputFilename := fmt.Sprintf("%s/%s", tempdir, reduceOutputFile(task.N))
+	outputDatabase, err := CreateDatabase(outputFilename)
 	if err != nil {
 		log.Printf("Error while opening %s: %v", outputFilename, err)
 		return err
@@ -151,11 +165,15 @@ func (task *ReduceTask) Process(tempdir string, client Interface) error {
 	defer rows.Close()
 
 	// For each pair...
+	keyCount := 0
+	valueCount := 0
+	gen := 0
 	var k, v, currentK string
 	var values chan string
 	var output chan Pair
-	i = 0
+	i := 0
 	for rows.Next() {
+		valueCount++
 		err = rows.Scan(&k, &v)
 		if err != nil {
 			log.Printf("Error while reading values from %s: %v", inputFilename, err)
@@ -163,8 +181,9 @@ func (task *ReduceTask) Process(tempdir string, client Interface) error {
 		}
 		if i != 0 && currentK != k {
 			close(values)
-			for pair := range(output) {
-				_, err = insert.Exec(k, v)
+			for pair := range output {
+				gen++
+				_, err = insert.Exec(pair.Key, pair.Value)
 				if err != nil {
 					log.Printf("Error while inserting pair into %s: %v", outputFilename, err)
 					return err
@@ -172,6 +191,7 @@ func (task *ReduceTask) Process(tempdir string, client Interface) error {
 			}
 		}
 		if i == 0 || currentK != k {
+			keyCount++
 			currentK = k
 			values = make(chan string)
 			output = make(chan Pair)
@@ -181,13 +201,125 @@ func (task *ReduceTask) Process(tempdir string, client Interface) error {
 		i++
 	}
 	close(values)
-	for pair := range(output) {
-		_, err = insert.Exec(k, v)
+	for pair := range output {
+		gen++
+		_, err = insert.Exec(pair.Key, pair.Value)
 		if err != nil {
 			log.Printf("Error while inserting pair into %s: %v", outputFilename, err)
 			return err
 		}
 	}
+	fmt.Printf("reduce task processed %d keys and %d values, generated %d pairs\n", keyCount, valueCount, gen)
+	return nil
 }
 
 // READY TO TEST PART 2
+
+func Start() {
+	args := os.Args
+
+	role := args[1]
+	if role == "W" {
+		startWorker(args[2])
+	} else {
+		startMaster(args[2])
+	}
+
+	log.Println("Ready!")
+	M := 9
+	R := 3
+	address := "localhost:8080"
+	source := "austen.sqlite3"
+	outputPattern := "data/map_%d_source.sqlite3"
+	tempDir := "data"
+	// os.RemoveAll(tempDir)
+
+	go func() {
+		http.Handle("/data/", http.StripPrefix("/data", http.FileServer(http.Dir("./data"))))
+		if err := http.ListenAndServe(address, nil); err != nil {
+			log.Fatalf("Error in HTTP server for %s: %v", address, err)
+		}
+	}()
+
+	_, err := SplitDatabase(source, outputPattern, M)
+	if err != nil {
+		log.Fatalf("Error while splitting databases: %v", err)
+	}
+
+	i := 0
+	finished := make(chan bool, 100)
+	for i < M {
+		go func(m int) {
+			c := new(Client)
+			task := &MapTask{
+				M, R, m, makeURL(fmt.Sprintf("%s/%s", address, tempDir), mapSourceFile(m)),
+			}
+			task.Process(tempDir, c)
+			finished <- true
+		}(i)
+		i++
+	}
+	i = 0
+	for i < M {
+		<-finished
+		i++
+	}
+	i = 0
+	for i < R {
+		m := 0
+		sourceHosts := make([]string, M)
+		for m < M {
+			sourceHosts[m] = makeURL(fmt.Sprintf("%s/%s", address, tempDir), mapOutputFile(m, i))
+			m++
+		}
+		go func(r int) {
+			c := new(Client)
+			task := &ReduceTask{
+				M: M, R: R, N: r, SourceHosts: sourceHosts,
+			}
+			task.Process(tempDir, c)
+			finished <- true
+		}(i)
+		i++
+	}
+	i = 0
+	for i < R {
+		<-finished
+		i++
+	}
+	log.Println("All done!")
+}
+
+type Client struct{}
+
+func (c Client) Map(key, value string, output chan<- Pair) error {
+	defer close(output)
+	lst := strings.Fields(value)
+	for _, elt := range lst {
+		word := strings.Map(func(r rune) rune {
+			if unicode.IsLetter(r) || unicode.IsDigit(r) {
+				return unicode.ToLower(r)
+			}
+			return -1
+		}, elt)
+		if len(word) > 0 {
+			output <- Pair{Key: word, Value: "1"}
+		}
+	}
+	return nil
+}
+
+func (c Client) Reduce(key string, values <-chan string, output chan<- Pair) error {
+	defer close(output)
+	count := 0
+	for v := range values {
+		i, err := strconv.Atoi(v)
+		if err != nil {
+			return err
+		}
+		count += i
+	}
+	p := Pair{Key: key, Value: strconv.Itoa(count)}
+	output <- p
+	return nil
+}
