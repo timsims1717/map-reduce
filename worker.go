@@ -1,4 +1,4 @@
-package main
+package mapreduce
 
 import (
 	"database/sql"
@@ -6,7 +6,7 @@ import (
 	"hash/fnv"
 	"log"
 	"net/http"
-	// "os"
+	"os"
 	// "path/filepath"
 	"strings"
 	"strconv"
@@ -213,15 +213,27 @@ func (task *ReduceTask) Process(tempdir string, client Interface) error {
 	return nil
 }
 
-// READY TO TEST PART 2
+func Start() {
+	argc := len(os.Args)
+	if argc < 3 {
+		fmt.Println("Usage: ", os.Args[0], "m/w <port> [masterAddress]")
+		os.Exit(1)
+	}
+	role := os.Args[1]
+	if role == "w" {
+		startWorker(os.Args[2], os.Args[3])
+	} else {
+		startMaster(os.Args[2])
+	}
+}
 
-func main() {
+func startMaster(port) {
 	log.Println("Ready!")
 	M := 9
 	R := 3
-	address := "localhost:8080"
+	address := fmt.Sprintf("localhost:%s", port)
 	source := "austen.sqlite3"
-	outputPattern := "data/map_%d_source.sqlite3"
+	sourcePattern := "data/map_%d_source.sqlite3"
 	tempDir := "data"
 	// os.RemoveAll(tempDir)
 
@@ -232,7 +244,7 @@ func main() {
 		}
 	}()
 
-	_, err := SplitDatabase(source, outputPattern, M)
+	_, err := SplitDatabase(source, sourcePattern, M)
 	if err != nil {
 		log.Fatalf("Error while splitting databases: %v", err)
 	}
@@ -279,38 +291,4 @@ func main() {
 		i++
 	}
 	log.Println("All done!")
-}
-
-type Client struct{}
-
-func (c Client) Map(key, value string, output chan<- Pair) error {
-	defer close(output)
-	lst := strings.Fields(value)
-	for _, elt := range lst {
-		word := strings.Map(func(r rune) rune {
-			if unicode.IsLetter(r) || unicode.IsDigit(r) {
-				return unicode.ToLower(r)
-			}
-			return -1
-		}, elt)
-		if len(word) > 0 {
-			output <- Pair{Key: word, Value: "1"}
-		}
-	}
-	return nil
-}
-
-func (c Client) Reduce(key string, values <-chan string, output chan<- Pair) error {
-	defer close(output)
-	count := 0
-	for v := range values {
-		i, err := strconv.Atoi(v)
-		if err != nil {
-			return err
-		}
-		count += i
-	}
-	p := Pair{Key: key, Value: strconv.Itoa(count)}
-	output <- p
-	return nil
 }
