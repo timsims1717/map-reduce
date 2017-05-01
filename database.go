@@ -1,16 +1,13 @@
 package main
 
 import (
-    "bufio"
 	"database/sql"
-    "fmt"
-    _ "github.com/mattn/go-sqlite3"
-    "io"
-    //"io/ioutil"
-    "log"
-    "net"
-    "net/http"
-    "os"
+	"fmt"
+	_ "github.com/mattn/go-sqlite3"
+	"io"
+	"log"
+	"net/http"
+	"os"
 )
 
 func OpenDatabase (path string) (*sql.DB, error) {
