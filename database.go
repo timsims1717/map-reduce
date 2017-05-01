@@ -10,8 +10,8 @@ import (
 	"os"
 )
 
-func OpenDatabase (path string) (*sql.DB, error) {
-	dat, err := sql.Open( "sqlite3", path)
+func OpenDatabase(path string) (*sql.DB, error) {
+	dat, err := sql.Open("sqlite3", path)
 
 	if err != nil || dat == nil {
 		return nil, err
@@ -39,8 +39,7 @@ func CreateDatabase(path string) (*sql.DB, error) {
 		return nil, err
 	}
 
-	dat, err := sql.Open( "sqlite3", path)
-
+	dat, err := sql.Open("sqlite3", path)
 
 	if err != nil || dat == nil {
 		return nil, err
@@ -135,14 +134,12 @@ func SplitDatabase(source, outputPattern string, m int) ([]string, error) {
 }
 
 func MergeDatabases(urls []string, path string, temp string) (*sql.DB, error) {
-	fmt.Printf("merging into %s\n", path)
 	datbase, err := CreateDatabase(path)
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	for _, url := range urls {
-		fmt.Printf("Downloading %s\n", url)
 		err := Download(url, temp)
 		if err != nil {
 			fmt.Printf("failure to Download %s\n", url)
