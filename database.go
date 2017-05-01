@@ -1,18 +1,19 @@
 package main
 
 import (
-    //"bufio"
+    "bufio"
 	"database/sql"
     "fmt"
     _ "github.com/mattn/go-sqlite3"
     "io"
     //"io/ioutil"
     "log"
+    "net"
     "net/http"
     "os"
 )
 
-func openDatabase (path string) (*sql.DB, error) {
+func OpenDatabase (path string) (*sql.DB, error) {
 	dat, err := sql.Open( "sqlite3", path)
 
 	if err != nil || dat == nil {
@@ -32,7 +33,7 @@ func openDatabase (path string) (*sql.DB, error) {
 	return dat, nil
 }
 
-func createDatabase(path string) (*sql.DB, error) {
+func CreateDatabase(path string) (*sql.DB, error) {
 	if _,err := os.Stat(path); err == nil {
 		os.Remove(path)
 	}
@@ -60,11 +61,11 @@ func createDatabase(path string) (*sql.DB, error) {
 		return nil, err
 	}
 	return dat, nil
-
 }
 
-func splitDatabase(source, outputPattern string, m int) ([]string, error) {
-	dat, err := openDatabase(source)
+func SplitDatabase(source, outputPattern string, m int) ([]string, error) {
+	dat, err := OpenDatabase(source)
+
 	if err != nil || dat == nil {
 		return nil, err
 	}
@@ -99,8 +100,10 @@ func splitDatabase(source, outputPattern string, m int) ([]string, error) {
 	inserts := make([]*sql.Stmt, m)
 	for i, _ := range(dats) {
 		filename := fmt.Sprintf(outputPattern, i)
-		filenames = append(filenames, filename)
-		dats[i], err = createDatabase(filename)
+
+		filenames[i] = filename
+		dats[i], err = CreateDatabase(filename)
+
 		if err != nil {
 			return nil, err
 		}
@@ -137,45 +140,54 @@ func splitDatabase(source, outputPattern string, m int) ([]string, error) {
 	return filenames, nil
 }
 
-func mergeDatabases(urls []string, path string, temp string) (*sql.DB, error) {
-	//NOT TESTED//
-	datbase, err := createDatabase(path)
+func MergeDatabases(urls []string, path string, temp string) (*sql.DB, error) {
+	fmt.Printf("merging into %s\n", path)
+	datbase, err := CreateDatabase(path)
+
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	for _, url := range urls {
-		err := download(url, temp)
+		fmt.Printf("Downloading %s\n", url)
+		err := Download(url, temp)
 		if err != nil {
-			log.Fatal(err)
+			fmt.Printf("failure to Download %s\n", url)
+			return nil, err
 		}
 
 		err = gatherInto(datbase, temp)
 		if err != nil {
-			log.Fatal(err)
+
+			fmt.Printf("failure to gather into\n")
+			return nil, err
 		}
 
 		err = os.Remove(temp)
 		if err != nil {
-			log.Fatal(err)
+
+			fmt.Printf("failure to remove\n")
+			return nil, err
+
 		}
 
 	}
 
-	return datbase, err
+	return datbase, nil
 }
 
-func download(url, path string) error {
+func Download(url, path string) error {
+
 	out, err := os.Create(path)
   	if err != nil  {
     	return err
   	}
   	defer out.Close()
 
-	resp, err := http.Get(url)
+	resp, err := http.Get(fmt.Sprintf("%s", url))
 	if err != nil {
-			log.Fatal(err)
-		}
+		return err
+	}
 	defer resp.Body.Close()
 
 	_, err = io.Copy(out, resp.Body)
@@ -209,30 +221,4 @@ func gatherInto(db *sql.DB, path string) error {
 	}
 
 	return err;
-}
-
-func main () {
-	//_,err := openDatabase("austen.sqlite3")
-	//_,err := createDatabase("datbase.sqlite3")
-	urls,err := splitDatabase("austen.sqlite3", "result-%d.sqlite3", 20)
-	if err != nil {
-		fmt.Println(err)
-	}
-
-	log.Println("MERGING")
-
-	_, er := mergeDatabases( urls , "testIn", "tempout") //Dont know what to use for the first parameter...
-	if er != nil {
-		fmt.Println(er)
-	}
-	log.Println("DONE MERGING")
-
-	// 	go func() {
- //    http.Handle("/data/", http.StripPrefix("/data", http.FileServer(http.Dir("/data"))))
- //    	if err := http.ListenAndServe("localhost:8080", nil); err != nil {
- //    	    log.Printf("Error in HTTP server for %s: %v", "localhost:8080", err)
- //   	 	}
-	// }()
-
-	log.Println("IT IS DONE")
 }
