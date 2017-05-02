@@ -26,6 +26,11 @@ type ReduceTask struct {
     SourceHosts []string // addresses of map workers
 }
 
+type Task struct {
+	Mappy MapTask
+	Reducey ReduceTask
+}
+
 type Pair struct {
     Key   string
     Value string
@@ -35,6 +40,8 @@ type Interface interface {
     Map(key, value string, output chan<- Pair) error
     Reduce(key string, values <-chan string, output chan<- Pair) error
 }
+
+type Nothing struct {}
 
 //Helpful Helpers!//
 func mapSourceFile(m int) string       { return fmt.Sprintf("map_%d_source.sqlite3", m) }
@@ -213,7 +220,7 @@ func (task *ReduceTask) Process(tempdir string, client Interface) error {
 	return nil
 }
 
-func Start() {
+func Start(c Interface) {
 	argc := len(os.Args)
 	if argc < 3 {
 		fmt.Println("Usage: ", os.Args[0], "m/w <port> [masterAddress]")
@@ -227,68 +234,189 @@ func Start() {
 	}
 }
 
-func startMaster(port) {
-	log.Println("Ready!")
+func startMaster(port string) {
+	address := fmt.Sprintf("%s:%s", getLocalAddress(), port)
+	log.Println("Ready to listen at address %s!", address)
 	M := 9
 	R := 3
-	address := fmt.Sprintf("localhost:%s", port)
 	source := "austen.sqlite3"
 	sourcePattern := "data/map_%d_source.sqlite3"
 	tempDir := "data"
 	// os.RemoveAll(tempDir)
 
-	go func() {
-		http.Handle("/data/", http.StripPrefix("/data", http.FileServer(http.Dir("./data"))))
-		if err := http.ListenAndServe(address, nil); err != nil {
-			log.Fatalf("Error in HTTP server for %s: %v", address, err)
-		}
-	}()
+	go startHTTPServer(address)
 
 	_, err := SplitDatabase(source, sourcePattern, M)
 	if err != nil {
 		log.Fatalf("Error while splitting databases: %v", err)
 	}
 
-	i := 0
-	finished := make(chan bool, 100)
-	for i < M {
-		go func(m int) {
-			c := new(Client)
-			task := &MapTask{
-				M, R, m, makeURL(fmt.Sprintf("%s/%s", address, tempDir), mapSourceFile(m)),
+	requests := make(chan bool)
+	responses := make(chan Task)
+	finished := make(chan bool)
+	master := &Master {
+		Request: requests,
+		Response: responses,
+		Finished: finished,
+	}
+	rpc.Register(master)
+
+	m := 0
+	for m < M {
+		<-requests
+		response := Task {
+			Mappy: MapTask {
+				M: M,
+				R: R,
+				N: m,
+				SourceHost: makeURL(fmt.Sprintf("%s/%s", address, tempDir), mapSourceFile(m)),
+			},
+			Reducey: nil,
+		}
+		responses <- response
+		// go func(m int) {
+		// 	c := new(Client)
+		// 	task := &MapTask{
+		// 		M, R, m, makeURL(fmt.Sprintf("%s/%s", address, tempDir), mapSourceFile(m)),
+		// 	}
+		// 	task.Process(tempDir, c)
+		// 	finished <- true
+		// }(i)
+		m++
+	}
+	mapAddresses := make([]string, M)
+	m = 0
+	for m < M {
+		select {
+		case madd := <-finished:
+			mapAddresses[m] = madd
+			m++
+		case <-requests:
+			response := Task {
+				Mappy: nil,
+				Reducey: nil,
 			}
-			task.Process(tempDir, c)
-			finished <- true
-		}(i)
-		i++
+			responses <- response
+		}
 	}
-	i = 0
-	for i < M {
-		<-finished
-		i++
-	}
-	i = 0
-	for i < R {
-		m := 0
+	r := 0
+	for r < R {
+		m = 0
 		sourceHosts := make([]string, M)
 		for m < M {
-			sourceHosts[m] = makeURL(fmt.Sprintf("%s/%s", address, tempDir), mapOutputFile(m, i))
+			sourceHosts[m] = makeURL(fmt.Sprintf("%s/%s", address, tempDir), mapOutputFile(m, r))
 			m++
 		}
-		go func(r int) {
-			c := new(Client)
-			task := &ReduceTask{
-				M: M, R: R, N: r, SourceHosts: sourceHosts,
-			}
-			task.Process(tempDir, c)
-			finished <- true
-		}(i)
-		i++
+		<-requests
+		response := Task {
+			Mappy: nil,
+			Reducey: ReduceTask {
+				M: M,
+				R: R,
+				N: r,
+				SourceHosts: sourceHosts,
+			},
+		}
+		responses <- response
+		// go func(r int) {
+		// 	c := new(Client)
+		// 	task := &ReduceTask{
+		// 		M: M, R: R, N: r, SourceHosts: sourceHosts,
+		// 	}
+		// 	task.Process(tempDir, c)
+		// 	finished <- true
+		// }(i)
+		r++
 	}
-	i = 0
-	for i < R {
-		<-finished
-		i++
+	reduceAddresses := make([]string, R)
+	r = 0
+	for r < R {
+		select {
+		case radd := <-finished:
+			reduceAddresses[r] = radd
+			r++
+		case <-requests:
+			response := Task {
+				Mappy: nil,
+				Reducey: nil,
+			}
+			responses <- response
+		}
 	}
 	log.Println("All done!")
+}
+
+type Master struct {
+	Request chan bool
+	Response chan Task
+	Finished chan bool
+}
+
+func (m Master) WorkRequest(request Nothing, response *Task) error {
+	m.Request <- true
+	response <- m.Response
+	return nil
+}
+
+func (m Master) FinishedWork(request string, response *Nothing) error {
+	m.Finished <- request
+	return nil
+}
+
+func startHTTPServer() {
+	http.Handle("/data/", http.StripPrefix("/data", http.FileServer(http.Dir("./data"))))
+	if err := http.ListenAndServe(address, nil); err != nil {
+		log.Fatalf("Error in HTTP server for %s: %v", address, err)
+	}
+}
+
+func getLocalAddress() string {
+	var localaddress string
+
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		panic("init: failed to find network interfaces")
+	}
+
+	// find the first non-loopback interface with an IP address
+	for _, elt := range ifaces {
+		if elt.Flags&net.FlagLoopback == 0 && elt.Flags&net.FlagUp != 0 {
+			addrs, err := elt.Addrs()
+			if err != nil {
+				panic("init: failed to get addresses for network interface")
+			}
+
+			for _, addr := range addrs {
+				if ipnet, ok := addr.(*net.IPNet); ok {
+					if ip4 := ipnet.IP.To4(); len(ip4) == net.IPv4len {
+						localaddress = ip4.String()
+						break
+					}
+				}
+			}
+		}
+	}
+	if localaddress == "" {
+		panic("init: failed to find non-loopback interface with valid address on this node")
+	}
+
+	return localaddress
+}
+
+func listen(address string) {
+	tcpAddr, err := net.ResolveTCPAddr("tcp", address)
+	checkError(err)
+
+	listener, err := net.ListenTCP("tcp", tcpAddr)
+	checkError(err)
+
+	fmt.Printf("Listening on port %s...\n", port)
+
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			continue
+		}
+		go rpc.ServeConn(conn)
+	}
 }
