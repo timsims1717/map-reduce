@@ -304,7 +304,7 @@ func startMaster(port string) {
 		m = 0
 		sourceHosts := make([]string, M)
 		for m < M {
-			sourceHosts[m] = makeURL(fmt.Sprintf("%s/%s", address, tempDir), mapOutputFile(m, r))
+			sourceHosts[m] = makeURL(fmt.Sprintf("%s/%s", mapAddresses[m], tempDir), mapOutputFile(m, r))
 			m++
 		}
 		<-requests
