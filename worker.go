@@ -5,13 +5,11 @@ import (
 	"fmt"
 	"hash/fnv"
 	"log"
+	"net"
 	"net/http"
+	"net/rpc"
 	"os"
-	// "path/filepath"
-	"strings"
-	"strconv"
 	"time"
-	"unicode"
 )
 
 //Useful Structs//
@@ -37,7 +35,7 @@ type Pair struct {
     Value string
 }
 
-type Interface {
+type Interface interface {
     Map(key, value string, output chan<- Pair) error
     Reduce(key string, values <-chan string, output chan<- Pair) error
 }
@@ -221,7 +219,7 @@ func (task *ReduceTask) Process(tempdir string, client Interface) error {
 	return nil
 }
 
-func Start(c Interface) {
+func Start(c Interface) error {
 	argc := len(os.Args)
 	if argc < 3 {
 		fmt.Println("Usage: ", os.Args[0], "m/w <port> [masterAddress]")
@@ -229,53 +227,71 @@ func Start(c Interface) {
 	}
 	role := os.Args[1]
 	if role == "w" {
-		startWorker(os.Args[2], os.Args[3])
+		return startWorker(os.Args[2], os.Args[3], c)
 	} else {
-		startMaster(os.Args[2])
+		return startMaster(os.Args[2])
 	}
 }
 
 
-func startWorker(port, masterAddress string, c Interface) {
-	address := fmt.Sprintf("%s:%s" getLocalAddress(), port)
+func startWorker(port, masterAddress string, c Interface) error {
+	address := fmt.Sprintf("%s:%s", getLocalAddress(), port)
 	tempDir := "data"
 	//http server//
-	startHTTPServer(address)
+	go startHTTPServer(address)
+	working := false
 
 	//Get work from the master//
 	for {
 		reply := new(Task)
-		call( formatAddress(masterAddress), "Master.WorkRequest", Nothing{}, reply)
-		if reply.Mappy == nil && reply.Reducey == nil {
-			time.sleep(10)
-		} else if reply.Mappy != nil {
+		err := call(masterAddress, "Master.WorkRequest", Nothing{}, reply)
+		if err != nil {
+			if !working {
+				log.Printf("Error while asking for work: %v\n", err)
+				return err
+			} else {
+				log.Println("We're done here!")
+				return nil
+			}
+		}
+		working = true
+		if reply.Mappy.M == 0 && reply.Reducey.M == 0 {
+			log.Println("No work for me. Sleeping.")
+			time.Sleep(time.Second)
+		} else if reply.Mappy.M != 0 {
+			log.Println("Mappy time!")
 			//Process map tasks//
-			err := reply.Mappy.Process(tempDir, c)
+			err = reply.Mappy.Process(tempDir, c)
 			if err != nil {
 				//die
-				log.Fatal("THE MAPPY IS DEAD because of %v", err)
+				log.Printf("THE MAPPY IS DEAD because of %v\n", err)
+				return err
 			}
+			log.Println("Done mapping!")
 
-			call(formatAddress(masterAddress), "Master.FinishedWork", address, reply)
+			call(masterAddress, "Master.FinishedWork", address, reply)
 		} else {
+			log.Println("Reducey time!")
 			//Process reduce tasks//
-			err := reply.Reducey.Process(tempDir, c)
+			err = reply.Reducey.Process(tempDir, c)
 			if err != nil {
 				//die
-				log.Fatal("THE REDUCEY IS DEAD because of %v", err)
+				log.Printf("THE REDUCEY IS DEAD because of %v\n", err)
+				return err
 			}
+			log.Println("Done reducing!")
 
-			call(formatAddress(masterAddress), "Master.FinishedWork", address, reply)
+			call(masterAddress, "Master.FinishedWork", address, reply)
 		}
 
 	}
-
+	return nil
 
 }
 
-func startMaster(port string) {
+func startMaster(port string) error {
 	address := fmt.Sprintf("%s:%s", getLocalAddress(), port)
-	log.Println("Ready to listen at address %s!", address)
+	log.Printf("Ready to listen at address %s!\n", address)
 
 	M := 9
 	R := 3
@@ -288,40 +304,35 @@ func startMaster(port string) {
 
 	_, err := SplitDatabase(source, sourcePattern, M)
 	if err != nil {
-		log.Fatalf("Error while splitting databases: %v", err)
+		log.Printf("Error while splitting databases: %v\n", err)
+		return err
 	}
 
 	requests := make(chan bool)
-	responses := make(chan Task)
-	finished := make(chan bool)
+	responses := make(chan *Task)
+	finished := make(chan string, M)
 	master := &Master {
 		Request: requests,
 		Response: responses,
 		Finished: finished,
 	}
 	rpc.Register(master)
+	rpc.HandleHTTP()
 
 	m := 0
 	for m < M {
 		<-requests
-		response := Task {
+		log.Printf("Received map request number %d!\n", m)
+		response := &Task {
 			Mappy: MapTask {
 				M: M,
 				R: R,
 				N: m,
 				SourceHost: makeURL(fmt.Sprintf("%s/%s", address, tempDir), mapSourceFile(m)),
 			},
-			Reducey: nil,
+			Reducey: ReduceTask{},
 		}
 		responses <- response
-		// go func(m int) {
-		// 	c := new(Client)
-		// 	task := &MapTask{
-		// 		M, R, m, makeURL(fmt.Sprintf("%s/%s", address, tempDir), mapSourceFile(m)),
-		// 	}
-		// 	task.Process(tempDir, c)
-		// 	finished <- true
-		// }(i)
 		m++
 	}
 	mapAddresses := make([]string, M)
@@ -329,12 +340,13 @@ func startMaster(port string) {
 	for m < M {
 		select {
 		case madd := <-finished:
+			log.Printf("Map worker %d (at address %s) finished.\n", m, madd)
 			mapAddresses[m] = madd
 			m++
 		case <-requests:
-			response := Task {
-				Mappy: nil,
-				Reducey: nil,
+			response := &Task {
+				Mappy: MapTask{},
+				Reducey: ReduceTask{},
 			}
 			responses <- response
 		}
@@ -348,8 +360,8 @@ func startMaster(port string) {
 			m++
 		}
 		<-requests
-		response := Task {
-			Mappy: nil,
+		response := &Task {
+			Mappy: MapTask{},
 			Reducey: ReduceTask {
 				M: M,
 				R: R,
@@ -358,14 +370,6 @@ func startMaster(port string) {
 			},
 		}
 		responses <- response
-		// go func(r int) {
-		// 	c := new(Client)
-		// 	task := &ReduceTask{
-		// 		M: M, R: R, N: r, SourceHosts: sourceHosts,
-		// 	}
-		// 	task.Process(tempDir, c)
-		// 	finished <- true
-		// }(i)
 		r++
 	}
 	reduceAddresses := make([]string, R)
@@ -373,41 +377,39 @@ func startMaster(port string) {
 	for r < R {
 		select {
 		case radd := <-finished:
-			reduceAddresses[r] = radd
+			log.Printf("Reduce worker %d (at address %s) finished.\n", r, radd)
+			reduceAddresses[r] = makeURL(fmt.Sprintf("%s/%s", radd, tempDir), reduceOutputFile(r))
 			r++
 		case <-requests:
-			response := Task {
-				Mappy: nil,
-				Reducey: nil,
+			response := &Task {
+				Mappy: MapTask{},
+				Reducey: ReduceTask{},
 			}
 			responses <- response
 		}
 	}
+	MergeDatabases(reduceAddresses, "totally_awesome_output_file.sqlite3", "temp")
 	log.Println("All done!")
+	return nil
 }
 
 type Master struct {
-	Request chan bool
-	Response chan Task
-	Finished chan bool
+	Request chan<- bool
+	Response <-chan *Task
+	Finished chan<- string
 }
 
-func (m Master) WorkRequest(request Nothing, response *Task) error {
+func (m *Master) WorkRequest(request Nothing, response *Task) error {
 	m.Request <- true
-	response <-m.Response
+	task := <-m.Response
+	response.Mappy = task.Mappy
+	response.Reducey = task.Reducey
 	return nil
 }
 
-func (m Master) FinishedWork(request string, response *Nothing) error {
+func (m *Master) FinishedWork(request string, response *Nothing) error {
 	m.Finished <- request
 	return nil
-}
-
-func startHTTPServer(address string) {
-	http.Handle("/data/", http.StripPrefix("/data", http.FileServer(http.Dir("./data"))))
-	if err := http.ListenAndServe(address, nil); err != nil {
-		log.Fatalf("Error in HTTP server for %s: %v", address, err)
-	}
 }
 
 func getLocalAddress() string {
@@ -443,20 +445,18 @@ func getLocalAddress() string {
 	return localaddress
 }
 
-func listen(address string) {
-	tcpAddr, err := net.ResolveTCPAddr("tcp", address)
-	checkError(err)
-
-	listener, err := net.ListenTCP("tcp", tcpAddr)
-	checkError(err)
-
-	fmt.Printf("Listening on port %s...\n", port)
-
-	for {
-		conn, err := listener.Accept()
-		if err != nil {
-			continue
-		}
-		go rpc.ServeConn(conn)
+func startHTTPServer(address string) {
+	http.Handle("/data/", http.StripPrefix("/data", http.FileServer(http.Dir("./data"))))
+	if err := http.ListenAndServe(address, nil); err != nil {
+		log.Fatalf("Error in HTTP server for %s: %v", address, err)
 	}
+}
+
+func call(address string, method string, request interface{}, reply interface{}) error {
+	client, err := rpc.DialHTTP("tcp", address)
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+	return client.Call(method, request, reply)
 }
