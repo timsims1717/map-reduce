@@ -10,6 +10,7 @@ import (
 	// "path/filepath"
 	"strings"
 	"strconv"
+	"time"
 	"unicode"
 )
 
@@ -31,7 +32,7 @@ type Pair struct {
     Value string
 }
 
-type Interface interface {
+type Interface {
     Map(key, value string, output chan<- Pair) error
     Reduce(key string, values <-chan string, output chan<- Pair) error
 }
@@ -213,24 +214,58 @@ func (task *ReduceTask) Process(tempdir string, client Interface) error {
 	return nil
 }
 
-// READY TO TEST PART 2
-
 func Start() {
-	args := os.Args
-
-	role := args[1]
-	if role == "W" {
-		startWorker(args[2])
+	argc := len(os.Args)
+	if argc < 3 {
+		fmt.Println("Usage: ", os.Args[0], "m/w <port> [masterAddress]")
+		os.Exit(1)
+	}
+	role := os.Args[1]
+	if role == "w" {
+		startWorker(os.Args[2], os.Args[3])
 	} else {
-		startMaster(args[2])
+		startMaster(os.Args[2])
+	}
+}
+
+func startWorker(port, masterAddress string, c Interface) {
+	address:= fmt.Sprintf("%s:%s" getLocalAddress(), port)
+
+	//http server//
+	var l net.Listener
+	listener, err := net.Listen("tcp", ":" + port)
+	if err != nil {
+		log.fatal("Error listening to: %v", port)
+	}
+	l = listener
+	go http.Serve(l, nil)
+
+	//Get work from the master//
+	reply := new(Task)
+	call( formatAddress(masterAddress), "Master.WorkRequest", Nothing{}, reply)
+	if reply.Mappy == nil && reply.Reducey {
+		time.sleep(10)
 	}
 
+	//Process map tasks//
+	err := reply.Mappy.Process(port, c)
+	if err != nil {
+		//die
+		log.Fatal("THE MAPPY IS DEAD because of %v", err)
+	}
+
+	call(formatAddress(masterAddress), "Master.FinishedWork", address, reply)
+
+
+}
+
+func startMaster(port) {
 	log.Println("Ready!")
 	M := 9
 	R := 3
-	address := "localhost:8080"
+	address := fmt.Sprintf("localhost:%s", port)
 	source := "austen.sqlite3"
-	outputPattern := "data/map_%d_source.sqlite3"
+	sourcePattern := "data/map_%d_source.sqlite3"
 	tempDir := "data"
 	// os.RemoveAll(tempDir)
 
@@ -241,7 +276,7 @@ func Start() {
 		}
 	}()
 
-	_, err := SplitDatabase(source, outputPattern, M)
+	_, err := SplitDatabase(source, sourcePattern, M)
 	if err != nil {
 		log.Fatalf("Error while splitting databases: %v", err)
 	}
@@ -290,36 +325,3 @@ func Start() {
 	log.Println("All done!")
 }
 
-type Client struct{}
-
-func (c Client) Map(key, value string, output chan<- Pair) error {
-	defer close(output)
-	lst := strings.Fields(value)
-	for _, elt := range lst {
-		word := strings.Map(func(r rune) rune {
-			if unicode.IsLetter(r) || unicode.IsDigit(r) {
-				return unicode.ToLower(r)
-			}
-			return -1
-		}, elt)
-		if len(word) > 0 {
-			output <- Pair{Key: word, Value: "1"}
-		}
-	}
-	return nil
-}
-
-func (c Client) Reduce(key string, values <-chan string, output chan<- Pair) error {
-	defer close(output)
-	count := 0
-	for v := range values {
-		i, err := strconv.Atoi(v)
-		if err != nil {
-			return err
-		}
-		count += i
-	}
-	p := Pair{Key: key, Value: strconv.Itoa(count)}
-	output <- p
-	return nil
-}

@@ -33,8 +33,6 @@ func main() {
 			Help()
 		}
     }
-
-
 }
 
 type Client struct{}
